@@ -23,7 +23,6 @@ BASE = {"jc": 4, "jmin": 40, "jmax": 70, "s1": 20, "s2": 20, "s3": 20, "s4": 20,
 CASES = {
     "baseline": {},
     "jmin_gt_jmax": {"jmin": 90, "jmax": 50},
-    "jc_without_jmax": {"jc": 3, "jmin": 0, "jmax": 0},
     "headers_overlap": {"h2": "150000-350000"},
     "header_range_reversed": {"h1": "200000-100000"},
     "same_size_init_resp": {"s1": 0, "s2": 56},

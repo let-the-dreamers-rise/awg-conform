@@ -26,7 +26,12 @@ class Spec(unittest.TestCase):
         self.assertEqual(classify(c, os.urandom(15) + msg(150, 148)).kind, "init")
         self.assertEqual(classify(c, os.urandom(20) + msg(350, 92)).kind, "response")
         self.assertEqual(classify(c, os.urandom(5) + msg(550, 64)).kind, "cookie")
-        self.assertEqual(classify(c, os.urandom(13) + msg(750, 32 + 48)).kind, "transport")
+        tr = struct.pack("<IIQ", 750, 7, 3) + os.urandom(48 + 16)
+        self.assertEqual(classify(c, os.urandom(13) + tr).kind, "transport")
+        # same bytes but an implausible counter: random data, not transport
+        junk = struct.pack("<II", 750, 7) + os.urandom(8 + 64)
+        if struct.unpack("<Q", junk[8:16])[0] >= 1 << 40:
+            self.assertEqual(classify(c, os.urandom(13) + junk).kind, "other")
         self.assertEqual(classify(c, os.urandom(15) + msg(250, 148)).kind, "other")
 
     def test_tags(self):
@@ -55,8 +60,8 @@ class Spec(unittest.TestCase):
         i1 = bytes.fromhex("c0ffee") + os.urandom(4) + struct.pack(">I", int(time.time())) + b"abc" + b"12"
         stream = [dg(i1), dg(os.urandom(12)), dg(os.urandom(19)), dg(os.urandom(15) + msg(150, 148))]
         self.assertEqual(check_stream(c, stream, "initiator")["findings"], [])
-        # one junk too many and one out of range
-        bad = [dg(i1), dg(os.urandom(12)), dg(os.urandom(25)), dg(os.urandom(11)), dg(os.urandom(15) + msg(150, 148))]
+        # one junk missing, and the remaining one out of range
+        bad = [dg(i1), dg(os.urandom(25)), dg(os.urandom(15) + msg(150, 148))]
         ids = {f["id"] for f in check_stream(c, bad, "initiator")["findings"]}
         self.assertEqual(ids, {"SPEC-PRE-COUNT", "SPEC-JUNK-SIZE"})
 
@@ -66,6 +71,15 @@ class Spec(unittest.TestCase):
         leaks = {l["id"] for l in check_stream(c, stream, "initiator")["leaks"]}
         self.assertIn("L1-WG-TYPE", leaks)
         self.assertIn("L2-WG-SIZE", leaks)
+
+
+class WrongPadding(unittest.TestCase):
+    def test_unpadded_transport_is_reported(self):
+        c = Config.from_dict(CFG)
+        unpadded = struct.pack("<IIQ", 750, 0xdeadbeef, 0) + os.urandom(96 + 16)
+        stream = [dg(os.urandom(15) + msg(150, 148)), dg(unpadded)]
+        ids = [f["id"] for f in check_stream(c, stream, "responder")["findings"]]
+        self.assertIn("SPEC-S4-WRONG", ids)
 
 
 if __name__ == "__main__":

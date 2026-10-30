@@ -3,8 +3,10 @@
 import struct
 from collections import Counter
 
-from .spec import (BASE, COOKIE, INIT, RESP, TRANSPORT, Config, classify,
-                   match_tags, tag_len)
+from .spec import (BASE, COOKIE, INIT, RESP, TRANSPORT, Classified, Config,
+                   classify, match_tags)
+
+BURST_GAP = 0.05  # pre-handshake packets go out in one batch with the initiation
 
 
 def finding(fid, sev, msg, **kw):
@@ -16,39 +18,63 @@ def finding(fid, sev, msg, **kw):
 def check_stream(cfg: Config, dgrams, role: str) -> dict:
     """dgrams: Datagram list sent by one peer, in capture order."""
     cls = [classify(cfg, d.payload) for d in dgrams]
-    counts = Counter(c.kind for c in cls)
     out = []
 
-    # --- pre-handshake packets (I1-I5 then Jc junk) before each initiation
+    # --- pre-handshake packets (I1-I5 then Jc junk) sent back-to-back before each initiation
     if role == "initiator":
         expected_i = len(cfg.ipackets)
-        pending = []
+        want = expected_i + cfg.jc
         n_init = 0
-        for d, c in zip(dgrams, cls):
+        for idx, c in enumerate(cls):
             if c.kind != INIT:
-                if c.kind == "other":
-                    pending.append(d)
                 continue
             n_init += 1
-            pre = pending
-            pending = []
-            want = expected_i + cfg.jc
+            # burst: datagrams immediately preceding the initiation, each within BURST_GAP of the next
+            j = idx
+            while j > 0 and dgrams[j].ts - dgrams[j - 1].ts <= BURST_GAP and cls[j - 1].kind not in (INIT, RESP):
+                j -= 1
+            pre = dgrams[j:idx]
+            if len(pre) > want:  # data packets that happened to be sent right before a rekey
+                pre = pre[-want:] if want else []
             if len(pre) != want:
                 out.append(finding("SPEC-PRE-COUNT", "error",
                                    f"initiation #{n_init}: {len(pre)} pre-handshake datagrams, spec expects "
                                    f"{expected_i} I-packets + Jc={cfg.jc} junk = {want}"))
             ipk, junk = pre[:expected_i], pre[expected_i:]
-            for idx, (tags, d2) in enumerate(zip(cfg.ipackets, ipk), start=1):
+            for k, (tags, d2) in enumerate(zip(cfg.ipackets, ipk), start=1):
                 why = match_tags(tags, d2.payload, now=d2.ts)
                 if why:
-                    out.append(finding("SPEC-I", "error", f"initiation #{n_init}: I{idx} does not match its tags: {why}"))
-            for j in junk:
-                n = len(j.payload)
+                    out.append(finding("SPEC-I", "error", f"initiation #{n_init}: I{k} does not match its tags: {why}"))
+            for jd in junk:
+                n = len(jd.payload)
                 if not (cfg.jmin <= n <= cfg.jmax):
                     out.append(finding("SPEC-JUNK-SIZE", "error",
                                        f"initiation #{n_init}: junk datagram of {n} bytes outside [Jmin={cfg.jmin}, Jmax={cfg.jmax}]"))
+            for k in range(j, idx):
+                cls[k] = Classified("pre-handshake")
         if n_init == 0:
             out.append(finding("NO-INIT", "error", "no handshake initiation recognised in capture"))
+
+    # --- transport packets sent with the wrong S4 padding
+    s4 = cfg.pad[TRANSPORT]
+    lo, hi = cfg.hdr[TRANSPORT]
+    for k, (d, c) in enumerate(zip(dgrams, cls)):
+        if c.kind != "other" or cfg.hp_key:
+            continue
+        p = d.payload
+        for pad in range(0, min(len(p) - 31, 256)):
+            if pad == s4:
+                continue
+            h = struct.unpack("<I", p[pad:pad + 4])[0]
+            if lo <= h <= hi and len(p) >= pad + 32:
+                ctr = struct.unpack("<Q", p[pad + 8:pad + 16])[0]
+                if ctr < 1 << 20:  # plausible counter, not random bytes
+                    out.append(finding("SPEC-S4-WRONG", "error",
+                                       f"datagram {k} ({len(p)} B) is a transport message with {pad} bytes of padding, "
+                                       f"config S4={s4} (counter {ctr}); the peer cannot parse it", index=k, pad=pad))
+                    cls[k] = Classified("transport-wrong-pad")
+                    break
+    counts = Counter(c.kind for c in cls)
 
     # --- header ranges actually used (only meaningful for ranges)
     for kind in (INIT, RESP, TRANSPORT):
@@ -72,7 +98,7 @@ def detectability(dgrams, cls, tr, cfg):
         leaks.append({"id": "L1-WG-TYPE", "count": wg,
                       "message": f"{wg} datagrams start with a plain WireGuard message type (x 00 00 00)"})
     # L2: unpadded WireGuard handshake sizes
-    sz = Counter(len(d.payload) for d in dgrams)
+    sz = Counter(len(d.payload) for d, c in zip(dgrams, cls) if c.kind in (INIT, RESP, COOKIE))
     fixed = {n: sz[n] for n in (148, 92, 64) if sz.get(n)}
     if fixed:
         leaks.append({"id": "L2-WG-SIZE", "sizes": fixed,

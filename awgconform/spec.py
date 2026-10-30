@@ -136,10 +136,23 @@ class Classified:
     body: bytes = b""   # message after padding, header-unprotected
 
 
+MAX_PLAUSIBLE_COUNTER = 1 << 40
+
+
 def classify(cfg: Config, p: bytes) -> Classified:
+    """Classify one datagram the way a spec-following receiver would.
+
+    The four message types are told apart only by size and by a header value
+    falling in a range, so random bytes can match by chance. A real transport
+    message also carries a 64-bit counter that starts at zero, so a candidate
+    transport match is accepted only with a plausible counter, and it wins
+    over a handshake match (which, with random trailers, any full-size
+    transport packet can also produce).
+    """
     ks = None
     if cfg.hp_key and len(p) >= HP_NONCE:
         ks = hp_keystream(cfg.hp_key, p[:HP_NONCE], 148)
+    found = []
     for kind in (INIT, RESP, COOKIE, TRANSPORT):
         pad = cfg.pad[kind]
         need = pad + BASE[kind]
@@ -154,10 +167,18 @@ def classify(cfg: Config, p: bytes) -> Classified:
             hb = bytearray(a ^ b for a, b in zip(hb, ks[:4]))
         h = struct.unpack("<I", bytes(hb))[0]
         lo, hi = cfg.hdr[kind]
-        if lo <= h <= hi:
-            body = p[pad:] if kind == TRANSPORT else p[pad:pad + BASE[kind]]
-            if ks is not None:
-                span = 16 if kind == TRANSPORT else BASE[kind]
-                body = bytes(a ^ b for a, b in zip(body[:span], ks[:span])) + body[span:]
-            return Classified(kind, h, pad, body)
-    return Classified("other")
+        if not lo <= h <= hi:
+            continue
+        body = p[pad:] if kind == TRANSPORT else p[pad:pad + BASE[kind]]
+        if ks is not None:
+            span = 16 if kind == TRANSPORT else BASE[kind]
+            body = bytes(a ^ b for a, b in zip(body[:span], ks[:span])) + body[span:]
+        if kind == TRANSPORT and struct.unpack("<Q", body[8:16])[0] >= MAX_PLAUSIBLE_COUNTER:
+            continue
+        found.append(Classified(kind, h, pad, body))
+    if not found:
+        return Classified("other")
+    for c in found:
+        if c.kind == TRANSPORT:
+            return c
+    return found[0]

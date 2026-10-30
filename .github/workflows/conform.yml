@@ -28,9 +28,11 @@ jobs:
         run: sudo -E env "PATH=$PATH" AWG_BIN=/opt/awg/bin ./scripts/build-impls.sh
       - name: Run matrix
         run: sudo -E env "PATH=$PATH" AWG_BIN=/opt/awg/bin python3 -m awgconform.matrix --out out
+      - name: Config-validation differential
+        run: sudo -E env "PATH=$PATH" AWG_BIN=/opt/awg/bin python3 -m awgconform.configdiff --out out/configdiff
       - name: Reference pair must interoperate
         run: python3 scripts/assert_reference.py out/matrix.json
-      - run: cat out/REPORT.md >> "$GITHUB_STEP_SUMMARY" || true
+      - run: cat out/REPORT.md out/configdiff/CONFIGDIFF.md >> "$GITHUB_STEP_SUMMARY" || true
         if: always()
       - uses: actions/upload-artifact@v4
         if: always()
