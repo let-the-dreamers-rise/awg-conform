@@ -46,7 +46,7 @@ sudo AWG_BIN=/opt/awg/bin python3 -m awgconform.matrix --out out
 ```
 
 Needs root (network namespaces, TUN), `tcpdump`, `iproute2`, `ping`, Go 1.25,
-Rust 1.95 and `python3-cryptography`.
+Rust 1.97 and `python3-cryptography`.
 
 ## Disclosure
 

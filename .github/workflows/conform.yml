@@ -16,7 +16,7 @@ jobs:
           go-version: "1.25"
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.97.0"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: /tmp/awg-src/awgtun -> target
@@ -30,7 +30,7 @@ jobs:
         run: sudo -E env "PATH=$PATH" AWG_BIN=/opt/awg/bin python3 -m awgconform.matrix --out out
       - name: Reference pair must interoperate
         run: python3 scripts/assert_reference.py out/matrix.json
-      - run: cat out/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - run: cat out/REPORT.md >> "$GITHUB_STEP_SUMMARY" || true
         if: always()
       - uses: actions/upload-artifact@v4
         if: always()
